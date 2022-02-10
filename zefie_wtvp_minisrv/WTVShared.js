@@ -155,6 +155,13 @@ class WTVShared {
         }
     }
 
+    decodePostData(obj) {
+        if (obj.post_data) {
+            obj.post_data = obj.post_data.toString();
+        }
+        return obj;
+    }
+
     /**
     * Returns an absolute path
     * @param {string} path 
