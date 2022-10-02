@@ -140,9 +140,11 @@ async function processPath(socket, service_vault_file_path, request_headers = ne
         clientShowAlert: clientShowAlert,
         WTVClientSessionData: WTVClientSessionData,
         WTVClientCapabilities: WTVClientCapabilities,
+		WTVFlashrom: WTVFlashrom,
         strftime: strftime,
         CryptoJS: CryptoJS,
-        fs: fs
+        fs: fs,
+        path: path
     }
 
     // Our variables and functions
@@ -162,7 +164,8 @@ async function processPath(socket, service_vault_file_path, request_headers = ne
         data: data,
         request_is_async: request_is_async,
         minisrv_version_string: z_title,
-        parseBool: parseBool
+        parseBool: parseBool,
+        cwd: __dirname // current working directory, updated below in function
     }
 
     // Our prototype overrides
@@ -232,6 +235,9 @@ async function processPath(socket, service_vault_file_path, request_headers = ne
                 if (fs.existsSync(service_vault_file_path)) {
                     file_exists = true;
                     is_dir = fs.lstatSync(service_vault_file_path).isDirectory()
+                    contextObj.cwd = service_vault_file_path
+                } else {
+                    contextObj.cwd = service_vault_file_path.substr(0, service_vault_file_path.lastIndexOf(path.sep));
                 }
 
                 if (file_exists && !is_dir) {
@@ -337,8 +343,7 @@ async function processPath(socket, service_vault_file_path, request_headers = ne
                     service_vault_found = true;
                     if (!minisrv_config.config.debug_flags.quiet) console.log(" * Found " + service_vault_file_path + ".js to handle request (JS Interpreter mode) [Socket " + socket.id + "]");
                     request_headers.service_file_path = service_vault_file_path + ".js";
-                    // expose var service_dir for script path to the root of the wtv-service
-                    var service_dir = service_vault_dir + path.sep + service_name;
+                    // expose var service_dir for script path to the root of the wtv-service                    
                     socket_sessions[socket.id].starttime = Math.floor(new Date().getTime() / 1000);
                     var script_data = fs.readFileSync(service_vault_file_path + ".js").toString();
                     var eval_ctx = new vm.Script(script_data, {
@@ -386,16 +391,16 @@ async function processPath(socket, service_vault_file_path, request_headers = ne
                                     var eval_ctx = new vm.Script(script_data, {
                                         "filename": catchall_file
                                     })
-                                    eval_ctx.runInNewContext(contextObj, {
-                                        "breakOnSigint": true
-                                    });
+									eval_ctx.runInNewContext(contextObj, {
+										"breakOnSigint": true
+									});
 
-                                    // Here we read back certain data from the ServiceVault Script Context Object
-                                    updateFromVM.forEach((item) => {
-                                        eval(item[0] + ' = contextObj["' + item[1] + '"]');
-                                    })
-
+									// Here we read back certain data from the ServiceVault Script Context Object
+									updateFromVM.forEach((item) => {
+										eval(item[0] +' = contextObj["'+item[1]+'"]');
+									})
                                     if (request_is_async && !minisrv_config.config.debug_flags.quiet) console.log(" * Script requested Asynchronous mode");
+									break;
                                 } else {
                                     service_check_dir.pop();
                                 }
@@ -453,13 +458,22 @@ function verifyServicePort(service_name, socket) {
 }
 
 async function processURL(socket, request_headers) {
-    var shortURL, headers, data = "";
+    var shortURL, headers, data, service_name = "";
     var enable_multi_query = false;
     request_headers.query = new Array();
     if (request_headers.request_url) {
         if (request_headers.request_url.indexOf('?') >= 0) {
             shortURL = request_headers.request_url.split('?')[0];
-            service_name = verifyServicePort(shortURL.split(':')[0], socket);
+            if (socket.minisrv_pc_mode)
+                service_name = verifyServicePort("pc_services", socket);
+            else
+                service_name = verifyServicePort(shortURL.split(':')[0], socket);
+
+            if (!service_name) {
+                service_name = verifyServicePort("pc_services", socket);
+                socket.minisrv_pc_mode = true;
+            }
+
             if (!service_name) {
                 var errpage = wtvshared.doErrorPage(500, null, socket.minisrv_pc_mode);
                 socket_sessions[socket.id].close_me = true;
@@ -553,37 +567,26 @@ async function processURL(socket, request_headers) {
             shortURL_split.shift();
             var shortURL_service_path = shortURL_split.join(":");
             shortURL = shortURL_service_name + ":/" + shortURL_service_path;
-        } else if (shortURL.indexOf(":") == -1 && request_headers.request.indexOf("HTTP/1") > 0 && socket.ssid == null) {
-            if (request_headers.Host) {
-                // PC browsers typically send a Host header
-                if (minisrv_config.services.pc_services) {
-                    if (!minisrv_config.services.pc_services.disabled) {
-                        socket.minisrv_pc_mode = true;
-                        service_name = verifyServicePort("pc_services", socket);
-                        if (!service_name) {
-                            if (minisrv_config.services.pc_services.drop_connection_on_wrong_port) {
-                                // just close the connection, no fancy error
-                                socket.end();
-                                return;
-                            }
-                            var errpage = wtvshared.doErrorPage(500, null, socket.minisrv_pc_mode);
-                            socket_sessions[socket.id].close_me = true;
-                            sendToClient(socket, errpage[0], errpage[1]);
+        } else if (shortURL.indexOf(":") == -1 && request_headers.request.indexOf("HTTP/1") > 0 && request_headers.Host && socket.ssid == null) {
+            // PC browsers typically send a Host header
+            if (minisrv_config.services.pc_services) {
+                if (!minisrv_config.services.pc_services.disabled) {
+                    socket.minisrv_pc_mode = true;
+                    service_name = verifyServicePort("pc_services", socket);
+                    if (!service_name) {
+                        if (minisrv_config.services.pc_services.drop_connection_on_wrong_port) {
+                            // just close the connection, no fancy error
+                            socket.end();
                             return;
                         }
-                        // if a directory, request index
-                        if (shortURL.substring(shortURL.length - 1) == "/") shortURL += "index";
-                        shortURL = service_name + ":" + shortURL;
-                    } else {
-                        // minimal pc mode to send error
-                        socket.minisrv_pc_mode = true;
-                        var errpage = wtvshared.doErrorPage(401, "PC services are disabled on this server", socket.minisrv_pc_mode);
-                        headers = errpage[0];
-                        data = errpage[1]
+                        var errpage = wtvshared.doErrorPage(500, null, socket.minisrv_pc_mode);
                         socket_sessions[socket.id].close_me = true;
-                        sendToClient(socket, headers, data);
+                        sendToClient(socket, errpage[0], errpage[1]);
                         return;
                     }
+                    // if a directory, request index
+                    if (shortURL.substring(shortURL.length - 1) == "/") shortURL += "index";
+                    shortURL = service_name + ":" + shortURL;
                 } else {
                     // minimal pc mode to send error
                     socket.minisrv_pc_mode = true;
@@ -594,6 +597,15 @@ async function processURL(socket, request_headers) {
                     sendToClient(socket, headers, data);
                     return;
                 }
+            } else {
+                // minimal pc mode to send error
+                socket.minisrv_pc_mode = true;
+                var errpage = wtvshared.doErrorPage(401, "PC services are disabled on this server", socket.minisrv_pc_mode);
+                headers = errpage[0];
+                data = errpage[1]
+                socket_sessions[socket.id].close_me = true;
+                sendToClient(socket, headers, data);
+                return;
             }
         }
 
