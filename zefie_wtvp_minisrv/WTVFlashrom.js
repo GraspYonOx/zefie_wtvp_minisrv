@@ -41,7 +41,7 @@ class WTVFlashrom {
 				}
 			});
 		} catch (e) {
-			var errpage = wtvshared.doErrorPage(404, "The service could not find the requested ROM.")
+			var errpage = this.wtvshared.doErrorPage(404, "The service could not find the requested ROM.")
 			var headers = errpage[0];
 			var data = errpage[1];
 			callback(data, headers);
