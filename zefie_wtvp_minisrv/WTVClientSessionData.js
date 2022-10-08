@@ -451,7 +451,7 @@ class WTVClientSessionData {
     getUserPasswordEnabled() {
         if (!this.minisrv_config.config.passwords.enabled) return false; // master config override
         var enabled = this.getSessionData("subscriber_password");
-        return (enabled); // true if set, false if null/disabled
+        return (enabled != null && typeof enabled != undefined); // true if set, false if null/disabled
     }
 
     validateUserPassword(passwd) {
@@ -680,12 +680,18 @@ class WTVClientSessionData {
         };
 
         var isInSubnet = function (ip, subnet) {
-            var mask, base_ip, long_ip = ip2long(ip);
-            if ((mask = subnet.match(/^(.*?)\/(\d{1,2})$/)) && ((base_ip = ip2long(mask[1])) >= 0)) {
-                var freedom = Math.pow(2, 32 - parseInt(mask[2]));
-                return (long_ip > base_ip) && (long_ip < base_ip + freedom - 1);
+            if (subnet.indexOf('/') == -1) {
+                var mask, base_ip, long_ip = this.ip2long(ip);
+                var mask2, base_ip2, long_ip2 = this.ip2long(ip);
+                return (long_ip == long_ip2);
+            } else {
+                var mask, base_ip, long_ip = this.ip2long(ip);
+                if ((mask = subnet.match(/^(.*?)\/(\d{1,2})$/)) && ((base_ip = this.ip2long(mask[1])) >= 0)) {
+                    var freedom = Math.pow(2, 32 - parseInt(mask[2]));
+                    return (long_ip > base_ip) && (long_ip < base_ip + freedom - 1);
+                }
             }
-            else return false;
+            return false;
         };
 
         var rejectSSIDConnection = function (blacklist) {
