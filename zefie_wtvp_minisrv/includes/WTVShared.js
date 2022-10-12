@@ -39,6 +39,10 @@ class WTVShared {
         }
     }
 
+    cloneObj(obj) {
+        return JSON.parse(JSON.stringify(obj));
+    }
+
     getServiceString(service, overrides = {}) {
         // used externally by service scripts
         if (service === "all") {
@@ -392,7 +396,7 @@ class WTVShared {
                     return obj.substr(0, 6) + ('*').repeat(9);
                 }
             } else {
-                var newobj = Object.assign({}, obj);
+                var newobj = this.cloneObj(obj);
                 if (obj.post_data) newobj.post_data = obj.post_data;
                 if (newobj["wtv-client-serial-number"]) {
                     var ssid = newobj["wtv-client-serial-number"];
@@ -414,8 +418,7 @@ class WTVShared {
     filterRequestLog(obj) {
         if (this.minisrv_config.config.filter_passwords_in_logs === true) {
             if (obj.query) {
-                var newobj = Object.assign({}, obj);
-                if (obj.post_data) newobj.post_data = obj.post_data;
+                var newobj = this.cloneObj(obj);
                 Object.keys(newobj.query).forEach(function (k) {
                     var key = k.toLowerCase();
                     switch (true) {
