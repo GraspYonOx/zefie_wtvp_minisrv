@@ -6,23 +6,57 @@ class WTVNews {
     wtvshared = null;
     service_name = null;
     client = null;
+    username = null;
+    password = null;
+    posting_allowed = true;
 
     constructor(minisrv_config, service_name) {
         this.minisrv_config = minisrv_config;
         this.service_name = service_name;
         const { WTVShared } = require("./WTVShared.js");
         this.wtvshared = new WTVShared(minisrv_config);
-        this.client = new this.newsie({
-            host: this.minisrv_config.services[service_name].upstream_address,
-            port: this.minisrv_config.services[service_name].upstream_port
-        })
+    }
+
+    initializeUsenet(host, port = 119, tls_options = null, username = null, password = null) {
+        // use local self-signed cert for local server
+        var newsie_options = {
+            host: host,
+            port: port,
+            tlsPort: (tls_options !== null) ? true : false,            
+        }
+        if (newsie_options.tlsPort) newsie_options.tlsOptions = tls_options;
+        this.client = new this.newsie(newsie_options);
+        if (username && password) {
+            this.username = username;
+            this.password = password;
+        }
     }
 
     connectUsenet() {
         return new Promise((resolve, reject) => {
             this.client.connect().then((response) => {
-                if (response.code == 200) {
-                    resolve(true);
+                if (response.code == 200 || response.code == 201) {
+                    if (response.code == 201) this.posting_allowed = false;
+                    if (this.username && this.password) {
+                        this.client.authInfoUser(this.username).then((res) => {
+                            if (res.code == "381") {
+                                res.authInfoPass(this.password).then((res) => {
+                                    if (res.code == 281) resolve(true);
+                                    else reject(res.description);
+                                }).catch((e) => {
+                                    console.error(" * WTVNews Error:", "Command: connect", e);
+                                    reject("Could not connect to upstream usenet server");
+                                });
+                            } else {
+                                reject(res.description)
+                            }
+                        }).catch((e) => {
+                            console.error(" * WTVNews Error:", "Command: connect", e);
+                            reject("Could not connect to upstream usenet server");
+                        });
+                    } else {
+                        resolve(true);
+                    }
                 }
             }).catch((e) => {
                 console.error(" * WTVNews Error:", "Command: connect", e);
@@ -31,16 +65,19 @@ class WTVNews {
         }); 
     }
 
-    listGroup(group, page = 0, limit = 100) {
+    listGroup(group, page = 0, limit = 100, raw_range = null) {
         return new Promise((resolve, reject) => {
             this.selectGroup(group).then((res) => {
-                var range = {
-                    start: (limit * page) + res.group.low,
+                if (!raw_range) {
+                    var range = {
+                        start: (limit * page) + res.group.low,
+                    }
+                    range.end = range.start + limit;
+                    if (page) range.start++;
+                    if (range.end > res.high) delete range.group.end;
+                } else {
+                    range = raw_range;
                 }
-                range.end = range.start + limit;
-                if (page) range.start++;
-                if (range.end > res.high) delete range.group.end;
-                console.log(res, range);
                 this.client.listGroup(group, range).then((data) => {
                     resolve(data);
                 }).catch((e) => {
@@ -65,48 +102,64 @@ class WTVNews {
         });
     }
 
-    getArticle(articleID) {
+    getArticle(articleID, get_next_last = true) {
         var articleID = parseInt(articleID);
         return new Promise((resolve, reject) => {
             var promises = [];
             this.client.article(articleID).then((data) => {
-                // ask server for next article
-                promises.push(new Promise((resolve, reject) => {
-                    this.client.next().then((res) => {
-                        data.next_article = res.article.articleNumber;
-                        resolve(data.next_article);
-                    }).catch(() => {
-                        data.next_article = null;
-                        resolve(data.next_article);
-                    })
-                }));
+                if (get_next_last) {
+                    // ask server for next article
+                    promises.push(new Promise((resolve, reject) => {
+                        this.client.next().then((res) => {
+                            data.next_article = res.article.articleNumber;
+                            resolve(data.next_article);
+                        }).catch((e) => {
+                            data.next_article = null;
+                            resolve(data.next_article);
+                        })
+                    }));
 
-                // ask server for previous article
-                promises.push(new Promise((resolve, reject) => {
-                    this.client.last().then((res) => {
-                        data.prev_article = res.article.articleNumber;
-                        // do it again
-                        this.client.article(data.prev_article).then(() => {
-                            this.client.last().then((res) => {
-                                data.prev_article = res.article.articleNumber;
+                    // ask server for previous article
+                    promises.push(new Promise((resolve, reject) => {
+                        this.client.last().then((res) => {
+                            data.prev_article = res.article.articleNumber;
+                            if (data.prev_article === articleID) {
+                                // do it again, needed this for CodoSoft NNTPd?
+                                this.client.article(data.prev_article).then(() => {
+                                    this.client.last().then((res) => {
+                                        data.prev_article = res.article.articleNumber;
+                                        resolve(data.prev_article);
+                                    }).catch(() => {
+                                        data.prev_article = null;
+                                        resolve(data.prev_article);
+                                    });
+                                }).catch(() => {
+                                    data.prev_article = null;
+                                    resolve(data.prev_article);
+                                });
+                            } else {
                                 resolve(data.prev_article);
-                            }).catch(() => {
-                                data.prev_article = null;
-                                resolve(data.prev_article);
-                            });
+                            }
                         }).catch(() => {
                             data.prev_article = null;
                             resolve(data.prev_article);
-                        });
-                    }).catch(() => {
-                        data.prev_article = null;
-                        resolve(data.prev_article);
-                    })
-                }));
+                        })
+                    }));
 
-                Promise.all(promises).then(() => {
+                    Promise.all(promises).then(() => {
+                        var self = this;
+                        if (data.article.headers) Object.keys(data.article.headers).forEach((k) => {
+                            data.article.headers[k] = self.decodeCharset(data.article.headers[k])
+                        });
+                        resolve(data);
+                    });
+                } else {
+                    var self = this;
+                    if (data.article.headers) Object.keys(data.article.headers).forEach((k) => {
+                        data.article.headers[k] = self.decodeCharset(data.article.headers[k])
+                    });
                     resolve(data);
-                });
+                }
             }).catch((e) => {
                 reject(`Error reading article ID ${articleID}`);
                 console.error(" * WTVNews Error:", "Command: article", "args:", articleID, "Error:", e);
@@ -114,15 +167,56 @@ class WTVNews {
         });
     }
 
+    decodeCharset(string) {
+        var regex = /=\?{1}(.+)\?{1}([B|Q])\?{1}(.+)\?{1}=/;
+        var decoded = null;
+        var check = string.match(regex);
+        if (check) {
+            var match = check[0];
+            var charset = check[1];
+            var encoding = check[2];
+            var encoded_text = check[3];
+            switch (encoding) {
+                case "B":
+                    var buffer = new Buffer.from(encoded_text, 'base64')
+                    decoded = buffer.toString(charset).replace(/[^\x00-\x7F]/g, "");;
+                    break;
+
+                case "Q":
+                    // unimplemented
+                    return string;
+            }
+            if (decoded) return string.replace(match, decoded);
+        }
+        return string;
+    }
+
     getHeader(articleID) {
         return new Promise((resolve, reject) => {
             this.client.head(articleID).then((data) => {
+                var self = this;
+                if (data.article.headers) Object.keys(data.article.headers).forEach((k) => {
+                    data.article.headers[k] = self.decodeCharset(data.article.headers[k])
+                });
                 resolve(data);
             }).catch((e) => {
                 reject(`Error getting header for article ID ${articleID}`);
                 console.error(" * WTVNews Error:", "Command: head -", "Article ID: " + articleID, e);
             });
         });
+    }
+
+    getHeaderFromMessage(message, header) {
+        var response = null;
+        if (message.article.headers) {
+            Object.keys(message.article.headers).forEach((k) => {
+                if (k.toLowerCase() == header.toLowerCase()) {
+                    response = message.article.headers[k];
+                    return false;
+                }
+            })
+        }
+        return response;
     }
 
     quitUsenet() {
@@ -150,15 +244,14 @@ class WTVNews {
                         promises.push(new Promise((resolve, reject) => {
                             this.selectGroup(group).then((res) => {
                                 this.getArticleMessageID(article).then((data) => {
-                                    console.log(data);
                                     messageid = data;
                                     resolve(data);
                                 }).catch((e) => {
-                                    console.log(e);
+                                    console.log('Error getting articleID',article, e)
                                     reject(e)
                                 });
                             }).catch((e) => {
-                                console.log(e);
+                                console.log('Error selecting group', e)
                                 reject(e)
                             });
                         }));
@@ -178,14 +271,13 @@ class WTVNews {
                                         'Message-ID': "<" + this.wtvshared.generatePassword(16) + "@" + this.minisrv_config.config.domain_name + ">",
                                         'Date': this.strftime('%A, %d-%b-%y %k:%M:%S %z', new Date())
                                     }
-                                    if (messageid) articleData.headers.References = messageid;
-
-                                    if (msg_body) {
-                                        articleData.body = msg_body.split("\n");
-                                    } else {
-                                        articleData.body = [];
+                                    if (messageid) {
+                                        articleData.headers.References = messageid;
+                                        articleData.headers['In-Reply-To'] = messageid;
                                     }
-                                    console.log(articleData);
+                                    if (msg_body) articleData.body = msg_body.split("\n");
+                                    else articleData.body = [];
+
                                     response.send(articleData).then((response) => {
                                         this.client.quit();
                                         if (response.code !== 240) {
@@ -197,8 +289,7 @@ class WTVNews {
                                         this.client.quit();
                                         reject("Could not send post. Server returned error " + response.code);
                                     });
-                                }
-                                else {
+                                } else {
                                     this.client.quit();
                                     console.log('usenet upstream uncaught error', e);
                                     reject("Could not send post. Server returned unknown error");
@@ -217,6 +308,7 @@ class WTVNews {
             this.client.article(articleID).then((data) => {
                 resolve(data.article.messageId);
             }).catch((e) => {
+                console.log("error getting messageID from article", articleID, e)
                 reject(e);
             });
         });
@@ -233,7 +325,6 @@ class WTVNews {
                         if (data.article) messages.push(data.article)
                         resolve();
                     }).catch((e) => {
-                        console.log(e, article);
                         reject(e);
                     });
                 }));
@@ -249,6 +340,76 @@ class WTVNews {
             }
         });
     }    
+
+
+    parseAttachments(message) {
+        var contype = this.getHeaderFromMessage(message, 'Content-Type');
+        if (contype) {
+            var regex = /multipart\/mixed\; boundary=\"(.+)\"/i;
+            var match = contype.match(regex);
+            if (match) {
+                var boundary = "--" + match[1];
+                var body = message.article.body.join("\n").split(boundary);
+                var attachments = [];
+                var i = 0;
+                var message_body = '';
+                var message_type = 'text/plain';
+                body.forEach((element) => {
+                    var section_type = null;
+                    var section = element.split("\n");
+                    attachments[i] = {};
+                    section.forEach((line) => {
+                        var section_header_match = line.match(/^Content\-/i)
+                        if (section_header_match) {
+                            var section_match = line.match(/^Content\-Type\: (.+)\;/i)
+                            if (section_match) {
+                                if (section_match[1].match(/text\/(html|plain)/)) {
+                                    section_type = section_match[1].match(/(text\/(html|plain))/)[1];
+                                    message_type = section_type;
+                                } else {
+                                    section_type = section_match[1];
+                                    attachments[i].content_type = section_match[1]
+                                }
+                            }
+                            section_match = line.match(/^Content\-Disposition\: (.+)\;/i)
+                            if (section_match) {
+                                section_match = line.match(/^Content\-Disposition\: (.+)\; filename=\"(.+)\"/i)
+                                if (section_match) attachments[i].filename = section_match[2];
+                            }
+                            section_match = line.match(/^Content-Transfer-Encoding: (.+)/i)
+                            if (section_match) attachments[i].content_encoding = section_match[1];
+                        } else {
+                            if (section_type != null) {
+                                if (section_type.match(/(text\/[html|plain])/)) message_body += line;
+                                else {
+                                    if (attachments[i].data) attachments[i].data += line;
+                                    else attachments[i].data = line;
+                                }
+                            }
+                        }
+                    })
+                    if (attachments[i].content_type) i++;
+                })
+                attachments.pop();
+                return {
+                    text: message_body,
+                    text_type: message_type,
+                    attachments: attachments
+                }
+            } else {
+                var message_body = '';
+                if (message.article.body) message_body = message.article.body.join("\n")
+
+                return { text: message_body }
+            }
+        } else {
+            var message_body = '';
+            if (message.article.body) message_body = message.article.body.join("\n")
+            
+            return { text: message_body }
+        }
+
+    }
 
     sortByResponse(messages) {
         var sorted = [];
@@ -285,9 +446,6 @@ class WTVNews {
                                 });
                             }
                         })
-                        if (!found) {
-                            message_id_roots.push({ "messageId": messageId, "index": j });
-                        }
                     } else {
                         message_id_roots.push({ "messageId": messageId, "index": k });
                     }
@@ -306,7 +464,7 @@ class WTVNews {
             var article_date = Date.parse(article.headers.DATE);
             message_roots_sorted.push({ "article": article, "relation": null, "date": article_date });
         });
-        message_roots_sorted.sort((a, b) => { return (a.date > b.date) });
+        message_roots_sorted.sort((a, b) => { return (a.date - b.date) });
         Object.keys(message_roots_sorted).forEach((k) => {
             sorted.push(message_roots_sorted[k]);
 
@@ -318,7 +476,7 @@ class WTVNews {
                     var article_date = Date.parse(article.headers.DATE);
                     relations.push({ "article": article, "relation": message_id_roots[k].messageId, "date": article_date })
                 });
-                relations.sort((a, b) => { return (a.date > b.date) });
+                relations.sort((a, b) => { return (a.date - b.date) });
                 Object.keys(relations).forEach((j) => {
                     sorted.push(relations[j]);
                 });

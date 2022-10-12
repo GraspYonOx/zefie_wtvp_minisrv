@@ -38,6 +38,7 @@
     <Content Include="diskmap_gen.js">
       <SubType>Code</SubType>
     </Content>
+    <Content Include="includes\WTVNewsServer.js" />
     <Content Include="packer.js" />
     <Content Include="ServiceDeps\wtv-1800\tellyscripts\bf0app\bf0app_OISP.tok" />
     <Content Include="ServiceDeps\wtv-1800\tellyscripts\bf0app\bf0app_WTV_18006138199.detok.txt" />
@@ -933,6 +934,9 @@
     <Content Include="ServiceVault\wtv-music\get-playlist.js">
       <SubType>Code</SubType>
     </Content>
+    <Content Include="ServiceVault\wtv-news\get-attachment.js">
+      <SubType>Code</SubType>
+    </Content>
     <Content Include="ServiceVault\wtv-news\lobby.js" />
     <Content Include="ServiceVault\wtv-news\news.js" />
     <Content Include="ServiceVault\wtv-passport\messengerlogin.js" />
@@ -1102,6 +1106,7 @@
     <Content Include="SharedROMCache\up-arrows.swf" />
     <Content Include="SharedROMCache\UsingWebTVBanner.gif" />
     <Content Include="SharedROMCache\WebTVLogoJewel.gif" />
+    <Content Include="sync_nntp.js" />
     <Content Include="test.js" />
     <Content Include="includes\WTVAdmin.js" />
     <Content Include="includes\WTVBGMusic.js">
